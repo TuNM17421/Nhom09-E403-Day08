@@ -180,44 +180,43 @@ def _split_by_size(
     overlap_chars: int = CHUNK_OVERLAP * 4,
 ) -> List[Dict[str, Any]]:
     """
-    Helper: Split text dài thành chunks với overlap.
-
-    TODO Sprint 1:
-    Hiện tại dùng split đơn giản theo ký tự.
-    Cải thiện: split theo paragraph (\n\n) trước, rồi mới ghép đến khi đủ size.
+    Split text dài thành chunks với overlap dựa trên đoạn văn (\n\n).
     """
     if len(text) <= chunk_chars:
-        # Toàn bộ section vừa một chunk
-        return [
-            {
-                "text": text,
-                "metadata": {**base_metadata, "section": section},
-            }
-        ]
+        return [{"text": text, "metadata": {**base_metadata, "section": section}}]
 
-    # TODO: Implement split theo paragraph với overlap
-    # Gợi ý:
-    # paragraphs = text.split("\n\n")
-    # Ghép paragraphs lại cho đến khi gần đủ chunk_chars
-    # Lấy overlap từ đoạn cuối chunk trước
+    paragraphs = text.split("\n\n")
     chunks = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_chars, len(text))
-        chunk_text = text[start:end]
+    current_chunk = ""
 
-        # TODO: Tìm ranh giới tự nhiên gần nhất (dấu xuống dòng, dấu chấm)
-        # thay vì cắt giữa câu
+    for i, p in enumerate(paragraphs):
+        p = p.strip()
+        if not p:
+            continue
+            
+        if len(current_chunk) + len(p) <= chunk_chars:
+            current_chunk += p + "\n\n"
+        else:
+            if current_chunk:
+                chunks.append({
+                    "text": current_chunk.strip(),
+                    "metadata": {**base_metadata, "section": section}
+                })
+            
+            # Tính toán overlap (lấy khoảng N ký tự từ cuối dòng trước)
+            overlap_text = current_chunk[-overlap_chars:] if len(current_chunk) > overlap_chars else current_chunk
+            # Xóa các phần rớt câu nếu có thể (lấy từ dấu chấm gần nhất)
+            if overlap_text and "." in overlap_text:
+                overlap_text = overlap_text[overlap_text.find(".")+1:].strip()
+                
+            current_chunk = overlap_text + "\n\n" + p + "\n\n"
 
-        chunks.append(
-            {
-                "text": chunk_text,
-                "metadata": {**base_metadata, "section": section},
-            }
-        )
-        # Overlap: lùi lại overlap_chars để chunk sau có ngữ cảnh từ chunk trước
-        start = end - overlap_chars
-
+    if current_chunk.strip():
+        chunks.append({
+            "text": current_chunk.strip(),
+            "metadata": {**base_metadata, "section": section}
+        })
+        
     return chunks
 
 
