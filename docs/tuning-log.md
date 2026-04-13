@@ -1,7 +1,8 @@
 # Tuning Log - RAG Pipeline (Day 08 Lab)
 
 > A/B Rule: Chỉ đổi MỘT biến mỗi lần.
-> Tài liệu này được điền theo snapshot repo hiện tại ngày 2026-04-13. Các ô điểm số dùng `N/A` là do scorecard thực tế chưa được sinh trong repo ở thời điểm mình tổng hợp.
+> Tài liệu này đã được cập nhật theo các lần chạy eval thực tế ngày 2026-04-13.
+> Các file trong `results/` hiện đang lưu baseline mới nhất và variant cuối cùng được chọn là `variant_dense_rerank`.
 
 ---
 
@@ -22,30 +23,32 @@ llm_model = "gpt-4o-mini"
 **Scorecard Baseline:**
 | Metric | Average Score |
 |--------|--------------|
-| Faithfulness | N/A - `score_faithfulness()` chưa chấm tự động |
-| Answer Relevance | N/A - `score_answer_relevance()` chưa implement |
-| Context Recall | N/A - chưa có run baseline thực tế trong `results/` |
-| Completeness | N/A - `score_completeness()` chưa implement |
+| Faithfulness | 4.80 / 5 |
+| Answer Relevance | 4.55 / 5 |
+| Context Recall | 5.00 / 5 |
+| Completeness | 4.25 / 5 |
 
-**Trạng thái hiện tại của repo:**
-- `retrieve_dense()` và `call_llm()` trong `rag_answer.py` vẫn chưa được implement, nên chưa thể chạy baseline end-to-end để sinh scorecard thật.
-- `results/scorecard_baseline.md` và `results/scorecard_variant.md` hiện chưa tồn tại trong repo.
-- Vì vậy, phần dưới đây ghi theo dạng pre-eval analysis: nêu câu hỏi có rủi ro thấp/cao và giả thuyết tuning trước khi có số liệu thật.
+**Nhận xét baseline:**
+- Baseline dense hoạt động ổn định trên phần lớn bộ 20 câu hỏi, đặc biệt mạnh ở các câu fact retrieval trực tiếp như `q01`, `q02`, `q03`, `q05`, `q13` đến `q20`.
+- `Context Recall = 5.00/5` cho thấy retriever đã mang về đúng nguồn mong đợi ở tất cả các câu có expected source. Điều này khá quan trọng vì nó cho thấy bottleneck chính của hệ thống không còn nằm ở recall.
+- Điểm yếu nằm nhiều hơn ở bước generation và answer shaping: model đôi khi retrieve đúng nhưng trả lời thiếu, diễn giải chưa đúng trọng tâm, hoặc abstain chưa đủ gọn.
 
-**Câu hỏi dự kiến yếu nhất (theo phân tích test set và corpus):**
-- `q07 (Approval Matrix → Access Control SOP)` - nhiều khả năng dense recall thấp vì query dùng alias/tên cũ, trong khi tài liệu chính dùng tên mới.
-- `q09 (ERR-403-AUTH)` - cần abstain chặt. Nếu generation không được ép đủ mạnh, model dễ suy diễn từ prior knowledge thay vì nói thiếu dữ liệu.
-- `q10 (refund khẩn cấp cho VIP)` - câu hỏi có phần "VIP" không có trong docs; pipeline phải giữ được phần chuẩn hóa quy trình nhưng không bịa quy trình đặc biệt.
+**Câu hỏi yếu nhất của baseline:**
+- `q04 (digital products refund)` - Faithfulness `3/5`, Completeness `2/5`. Retriever lấy đúng source nhưng answer thêm khả năng ngoại lệ “trừ khi có lỗi do nhà sản xuất”, làm lệch với chính sách cấm hoàn tiền cho hàng kỹ thuật số.
+- `q07 (Approval Matrix)` - Recall `5/5` nhưng Completeness `2/5`. Hệ thống retrieve đúng tài liệu Access Control SOP, nhưng answer không nêu rõ đây là tên mới của “Approval Matrix for System Access”.
+- `q09 (ERR-403-AUTH)` - Faithfulness `4/5`, Relevance `3/5`, Completeness `3/5`. Answer có xu hướng suy đoán lỗi liên quan đến quyền truy cập thay vì abstain ngắn gọn và hướng người dùng về IT Helpdesk.
+- `q16 (laptop mới có bị tính phí không)` - Relevance `1/5`, Completeness `1/5`. Đây là câu thiếu context thật sự; pipeline abstain đúng tinh thần nhưng chưa đưa ra hướng dẫn hữu ích nào thêm.
 
 **Giả thuyết nguyên nhân (Error Tree):**
 - [ ] Indexing: Chunking cắt giữa điều khoản
 - [ ] Indexing: Metadata thiếu `effective_date`
-- [x] Retrieval: Dense bỏ lỡ exact keyword / alias
+- [ ] Retrieval: Dense bỏ lỡ exact keyword / alias
 - [ ] Retrieval: Top-k quá ít nên thiếu evidence
-- [x] Generation: Prompt cần abstain đủ mạnh để tránh bịa ở câu thiếu context
-- [ ] Generation: Context quá dài → lost in the middle
+- [x] Generation: Answer đôi khi diễn giải quá tay dù đã retrieve đúng nguồn
+- [x] Generation: Abstain chưa đủ sắc gọn ở câu thiếu context
 
-Lý do đánh dấu: corpus hiện tại đã được chia rất sát theo heading và mỗi section đang nằm gọn trong một chunk, nên rủi ro lớn hơn nằm ở retrieval recall với alias/keyword và ở khả năng abstain của bước generation.
+**Kết luận từ baseline:**
+Tập lỗi chính không còn nằm ở retrieval recall mà nằm ở cách model chọn và trình bày thông tin từ context. Vì vậy, các experiment tiếp theo nên tập trung vào việc cải thiện quality của top chunks đưa vào prompt hoặc kiểm soát generation tốt hơn.
 
 ---
 
@@ -54,12 +57,9 @@ Lý do đánh dấu: corpus hiện tại đã được chia rất sát theo head
 **Ngày:** 2026-04-13  
 **Biến thay đổi:** `retrieval_mode: "dense" -> "hybrid"`  
 **Lý do chọn biến này:**
-Biến đầu tiên nên thử là retrieval mode vì nó tác động trực tiếp tới recall nhưng chưa làm thay đổi prompt, model hoặc cách chấm. Test set có một số tín hiệu rất rõ cho hybrid:
-- `q07` dùng tên cũ "Approval Matrix" trong khi tài liệu hiện hành ghi "Access Control SOP".
-- Corpus chứa nhiều exact term như `P1`, `VPN`, `Flash Sale`, `Admin Access`, `IT-ACCESS`.
-- Hybrid giúp kết hợp semantic match của dense với keyword match của BM25, phù hợp hơn dense thuần cho corpus nghiệp vụ kiểu policy + SOP + FAQ.
+Đây là vòng A/B đầu tiên để kiểm tra giả thuyết ban đầu: corpus có nhiều exact term và alias như `Approval Matrix`, `P1`, `Flash Sale`, `IT-ACCESS`, nên hybrid (`dense + BM25`) có thể tăng recall hoặc tăng completeness ở các câu keyword-heavy mà không phải đổi prompt hay LLM.
 
-**Config thay đổi:**
+**Config Variant 1:**
 ```text
 retrieval_mode = "hybrid"
 top_k_search = 10
@@ -68,61 +68,88 @@ use_rerank = False
 llm_model = "gpt-4o-mini"
 ```
 
-**Scorecard Variant 1:**
+**Scorecard Variant 1 (Hybrid Only):**
 | Metric | Baseline | Variant 1 | Delta |
 |--------|----------|-----------|-------|
-| Faithfulness | N/A | N/A | N/A |
-| Answer Relevance | N/A | N/A | N/A |
-| Context Recall | N/A | N/A | N/A |
-| Completeness | N/A | N/A | N/A |
+| Faithfulness | 4.85/5 | 4.90/5 | +0.05 |
+| Answer Relevance | 4.50/5 | 4.40/5 | -0.10 |
+| Context Recall | 5.00/5 | 5.00/5 | 0.00 |
+| Completeness | 4.15/5 | 4.00/5 | -0.15 |
 
-**Nhận xét trước khi chạy thật:**
-- Kỳ vọng cải thiện rõ nhất ở `q07`, vì đây là trường hợp alias/name drift điển hình của retrieval.
-- Các câu có keyword mạnh như `q01` và `q06` (P1, escalation) nhiều khả năng không giảm chất lượng vì dense vốn đã hợp với chúng; hybrid chỉ bổ sung thêm tín hiệu sparse.
-- `q09` không nên "cải thiện" theo kiểu trả lời dài hơn; thành công ở câu này là retrieve ít noise và abstain đúng.
-- Nếu hybrid kéo về quá nhiều chunk chứa keyword nhưng ít liên quan về ngữ nghĩa, faithfulness có thể không tăng tương ứng với context recall. Đó là lý do chưa bật rerank trong Variant 1.
+**Nhận xét:**
+- `q04` cải thiện Completeness từ `2 -> 3`.
+- `q07` cải thiện Completeness từ `2 -> 3`, cho thấy hybrid có ích phần nào ở câu alias.
+- Tuy nhiên `q06` giảm rất mạnh từ `Complete=5` xuống `Complete=1`, cho thấy hybrid có thể kéo về thêm chunk liên quan nhưng lại làm câu trả lời bị trôi khỏi ý chính.
+- `q09` cũng kém hơn baseline vì answer chuyển sang abstain quá ngắn, làm giảm Relevance và Completeness.
 
 **Kết luận:**
-Variant 1 là lựa chọn hợp lý nhất cho vòng tune đầu vì:
-- Nó bám đúng A/B rule: chỉ đổi một biến là retrieval mode.
-- Nó có giả thuyết rõ ràng, xuất phát từ cấu trúc query/corpus chứ không đổi ngẫu nhiên.
-- Nó dễ giải thích trong report: nếu delta tăng ở `context_recall` và `completeness`, ta có thể quy phần lớn cải thiện cho hybrid retrieval.
-
-Điều kiện để giữ Variant 1 làm cấu hình cuối:
-- `Context Recall` tăng ở các câu alias/keyword-heavy.
-- `Faithfulness` không giảm đáng kể.
-- Không làm pipeline kém ổn định ở các câu easy vốn dense đã xử lý tốt.
+Variant hybrid-only không được chọn làm cấu hình cuối. Dù có vài cải thiện cục bộ, kết quả tổng thể kém hơn baseline ở `relevance` và `completeness`, trong khi `context_recall` không tăng thêm. Điều này cho thấy giả thuyết “vấn đề chính nằm ở retrieval recall” không đúng với test set này.
 
 ---
 
-## Variant 2 (nếu có thời gian)
+## Variant 2 (được chọn)
 
-**Biến thay đổi:** bật `use_rerank = True` sau khi hybrid đã ổn định  
+**Biến thay đổi:** `use_rerank: False -> True` trên dense retrieval  
 **Config:**
 ```text
-retrieval_mode = "hybrid"
+retrieval_mode = "dense"
 top_k_search = 10
 top_k_select = 3
 use_rerank = True
+llm_model = "gpt-4o-mini"
 ```
 
-**Mục tiêu của Variant 2:**
-- Giảm noise khi hybrid mang về nhiều chunk có keyword đúng nhưng không phải chunk trả lời trực tiếp.
-- Giữ top-3 chunks đưa vào prompt gọn hơn, tăng khả năng generation bám đúng evidence.
+**Scorecard Variant 2 (Dense + Rerank):**
+| Metric | Baseline | Variant 2 | Delta |
+|--------|----------|-----------|-------|
+| Faithfulness | 4.80/5 | 4.90/5 | +0.10 |
+| Answer Relevance | 4.55/5 | 4.70/5 | +0.15 |
+| Context Recall | 5.00/5 | 5.00/5 | 0.00 |
+| Completeness | 4.25/5 | 4.25/5 | 0.00 |
 
-**Khi nào mới nên thử Variant 2:**
-- Chỉ sau khi Variant 1 đã có scorecard thật.
-- Chỉ khi thấy `context_recall` đã ổn nhưng `faithfulness` hoặc `completeness` chưa tăng tương xứng.
+**Nhận xét:**
+- `q06` cải thiện rõ từ `4/5/5/5` lên `5/5/5/5`, tức rerank giúp chọn chunk trả lời đúng trọng tâm escalation hơn.
+- `q08` cải thiện Completeness từ `4 -> 5`.
+- `q09` cải thiện từ `4/3/None/3` lên `5/5/None/2`: answer grounded hơn và relevant hơn, dù vẫn chưa hoàn hảo ở phần hướng dẫn xử lý.
+- `q10` cải thiện Relevance từ `2 -> 3`, nghĩa là rerank giúp model trả lời đúng trọng tâm hơn trong case thiếu policy đặc biệt cho VIP.
+- Các câu fact-based còn lại hầu như giữ nguyên, nên rerank không làm hỏng những câu baseline vốn đã tốt.
+
+**Kết luận:**
+Dense + rerank là variant tốt nhất trong các thử nghiệm ngày 2026-04-13. Đây cũng là variant được chọn làm cấu hình cuối vì:
+- Chỉ đổi đúng một biến so với baseline.
+- Cải thiện `faithfulness` và `relevance`.
+- Không làm giảm `context_recall`.
+- Giữ `completeness` ngang baseline và cải thiện ở một số câu khó.
+
+---
+
+## Ghi chú thêm về exploratory run
+
+Nhóm cũng đã thử một cấu hình `hybrid + rerank`:
+
+```text
+retrieval_mode = "hybrid"
+use_rerank = True
+label = "variant_hybrid_rerank"
+```
+
+Kết quả exploratory run này cho:
+- Faithfulness: `4.90/5`
+- Relevance: `4.40/5`
+- Context Recall: `5.00/5`
+- Completeness: `4.10/5`
+
+Run này không được chọn vì dù faithfulness tăng nhẹ, relevance và completeness lại thấp hơn baseline, đặc biệt ở `q09` và `q10`. Điều này củng cố nhận định rằng trên bộ test hiện tại, rerank có ích hơn khi áp dụng trên dense baseline ổn định thay vì chồng thêm lên hybrid.
 
 ---
 
 ## Tóm tắt học được
 
 1. **Lỗi phổ biến nhất trong pipeline này là gì?**  
-   Với snapshot repo hiện tại, rủi ro lớn nhất không nằm ở chunking mà nằm ở retrieval recall cho alias/keyword và khả năng abstain ở câu hỏi thiếu context.
+   Lỗi phổ biến nhất trong bộ test hiện tại không phải là retrieve sai nguồn, mà là answer chưa tối ưu dù đã có đúng evidence: thiếu detail quan trọng, diễn giải quá mức, hoặc abstain chưa đủ đúng trọng tâm.
 
 2. **Biến nào có tác động lớn nhất tới chất lượng?**  
-   Retrieval mode là biến có tác động kỳ vọng lớn nhất, vì test set chứa cả câu semantic (`refund policy`, `remote work`) lẫn câu exact-term/alias (`Approval Matrix`, `P1`, `ERR-403-AUTH`).
+   Trên dữ liệu thực nghiệm ngày 2026-04-13, rerank trên dense baseline là biến có tác động tích cực nhất. Hybrid-only không cải thiện tổng thể, còn dense+rerrank cho delta tốt nhất mà vẫn giữ recall tối đa.
 
 3. **Nếu có thêm 1 giờ, nhóm sẽ thử gì tiếp theo?**  
-   Hoàn thiện `retrieve_dense()`, `call_llm()`, và các hàm scoring để sinh scorecard thật; sau đó chạy hybrid-only trước, rồi mới thử rerank như một experiment thứ hai tách biệt.
+   Hoàn thiện thêm phần scoring hoặc chuẩn hóa prompt abstain cho các câu thiếu context như `q09`, `q10`, `q16`, sau đó thử một vòng `dense + rerank + prompt abstain chặt hơn` để xem có kéo được `relevance` và `completeness` ở các câu khó hay không.
