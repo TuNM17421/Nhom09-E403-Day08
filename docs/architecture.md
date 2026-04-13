@@ -1,7 +1,7 @@
 # Architecture - RAG Pipeline (Day 08 Lab)
 
 > Deliverable của Documentation Owner.
-> Tài liệu này mô tả kiến trúc theo snapshot repo hiện tại ngày 2026-04-13.
+> Tài liệu này mô tả kiến trúc theo snapshot repo hiện tại ngày 2026-04-13 trên nhánh đã merge Sprint 1 và Sprint 2, đồng thời đã có implementation cho các lựa chọn Sprint 3.
 
 ## 1. Tổng quan kiến trúc
 
@@ -48,12 +48,17 @@ Tổng cộng corpus hiện có 29 chunks sau khi chạy `preprocess_document()`
 - Fallback char-based trong `_split_by_size()` là lớp an toàn cho các tài liệu dài hơn về sau, nhưng trên snapshot hiện tại chưa phải dùng nhiều.
 
 ### Embedding model
-- **Embedding provider mặc định theo scaffold**: OpenAI
-- **Model đề xuất mặc định**: `text-embedding-3-small`
+- **Embedding provider đang được implement**: OpenAI
+- **Model embedding đang dùng**: `text-embedding-3-small`
 - **Vector store**: ChromaDB (`PersistentClient`)
 - **Similarity metric**: Cosine
 
-Ghi chú: `get_embedding()` trong repo hiện vẫn chưa được implement, nhưng `.env.example` đang để `EMBEDDING_PROVIDER=openai`, nên đây là lựa chọn mặc định hợp lý nhất nếu nhóm không đổi sang local embedding.
+### Chi tiết lưu trữ hiện tại
+- Collection name: `rag_lab`
+- Chroma path: `chroma_db/`
+- Cách rebuild: `build_index()` xóa collection cũ rồi upsert lại toàn bộ chunks để tránh dữ liệu cũ lẫn với index mới
+
+Ghi chú: `get_embedding()` đã được implement bằng OpenAI trong `index.py`, nên phần indexing hiện yêu cầu `OPENAI_API_KEY` trước khi build index.
 
 ---
 
@@ -72,17 +77,23 @@ Baseline này khớp với cấu hình hiện có trong `rag_answer.py` và `eva
 ### Variant (Sprint 3)
 | Tham số | Giá trị | Thay đổi so với baseline |
 |---------|---------|------------------------|
-| Strategy | Hybrid (`dense + sparse/BM25`) | Đổi retrieval mode từ dense sang hybrid |
+| Strategy | Hybrid (`dense + sparse/BM25` với RRF) | Đổi retrieval mode từ dense sang hybrid |
 | Top-k search | 10 | Giữ nguyên để không làm nhiễu A/B |
 | Top-k select | 3 | Giữ nguyên để so sánh công bằng |
-| Rerank | Không ở Variant 1 | Giữ nguyên để chỉ đổi một biến |
-| Query transform | Không ở Variant 1 | Để dành cho vòng tune tiếp theo nếu hybrid chưa đủ |
+| Rerank | Tùy chọn, đã có implementation | Có thể bật thêm nếu hybrid vẫn còn noise |
+| Query transform | Đã có helper implementation, chưa được wire vào `rag_answer()` mặc định | Dành cho vòng tune tiếp theo nếu cần tăng recall |
 
 **Lý do chọn variant này:**
 Corpus có cả ngôn ngữ tự nhiên lẫn exact terms như `P1`, `Flash Sale`, `VPN`, `Admin Access`, `Approval Matrix`, `ERR-403-AUTH`. Dense retrieval phù hợp với ngữ nghĩa tổng quát, nhưng hybrid phù hợp hơn cho các query chứa alias, tên cũ, mã lỗi hoặc keyword chính xác. Trong test set, `q07` là tín hiệu rõ nhất vì query dùng tên cũ "Approval Matrix" trong khi tài liệu hiện tại đã đổi tên thành "Access Control SOP".
 
+### Trạng thái implementation Sprint 3
+- `retrieve_sparse()` đã được implement bằng BM25 trên toàn bộ chunks lấy từ ChromaDB.
+- `retrieve_hybrid()` đã được implement bằng Reciprocal Rank Fusion với trọng số mặc định `dense_weight=0.6`, `sparse_weight=0.4`.
+- `rerank()` đã có implementation bằng LLM, chấm từng cặp `(query, chunk)` theo thang 0-10 rồi chọn lại top-k.
+- `transform_query()` đã có implementation cho `expansion`, `decomposition`, và `hyde`, nhưng hiện chưa được gọi mặc định trong `rag_answer()`.
+
 **Lưu ý về A/B rule:**
-Ở vòng tune đầu tiên, nhóm nên đổi đúng một biến là `retrieval_mode="hybrid"` và giữ `use_rerank=False`. Nếu bật đồng thời hybrid và rerank thì khó giải thích delta đến từ retrieval hay từ ranking.
+Code hiện đã hỗ trợ cả hybrid và rerank, và `VARIANT_CONFIG` trong `eval.py` đang để `retrieval_mode="hybrid"` cùng `use_rerank=True`. Tuy nhiên, nếu muốn giải thích delta thật chặt theo A/B rule, nhóm nên chạy thêm ít nhất một vòng `hybrid-only` trước khi kết luận về tác động của rerank.
 
 ---
 
@@ -114,7 +125,7 @@ Answer:
 | Temperature | 0 |
 | Max tokens | 512 |
 
-`rag_answer.py` đang đặt `LLM_MODEL` mặc định là `gpt-4o-mini`, và `.env.example` cũng dùng cùng giá trị này. Temperature nên giữ ở 0 để output ổn định hơn khi evaluation.
+`rag_answer.py` đang đặt `LLM_MODEL` mặc định là `gpt-4o-mini`, và `.env.example` cũng dùng cùng giá trị này. Temperature được giữ ở 0 để output ổn định hơn khi evaluation. Ngoài bước generate answer, cùng model này hiện còn được dùng trong `rerank()` và `transform_query()`.
 
 ---
 
@@ -130,6 +141,7 @@ Answer:
 | Retriever không mang đủ evidence | Answer đúng một phần nhưng thiếu điều kiện ngoại lệ | Kiểm tra `score_context_recall()` trong `eval.py` và đối chiếu `expected_sources` |
 | Prompt grounding yếu | Model trả lời nghe hợp lý nhưng thêm chi tiết không có trong docs | Kiểm tra `score_faithfulness()` và đọc lại context block/prompt |
 | Abstain chưa đủ chặt | Câu không có trong docs vẫn bị model đoán đại | Test trực tiếp với `ERR-403-AUTH` và các query thiếu context đặc biệt |
+| Eval chưa chốt được delta | Đã có baseline/variant code nhưng chưa có scorecard thật | Hoàn thiện các hàm scoring trong `eval.py` và sinh `results/scorecard_*.md` |
 
 ---
 
