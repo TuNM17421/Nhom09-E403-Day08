@@ -43,10 +43,10 @@ BASELINE_CONFIG = {
 # Cấu hình variant (Sprint 3 — điều chỉnh theo lựa chọn của nhóm)
 # TODO Sprint 4: Cập nhật VARIANT_CONFIG theo variant nhóm đã implement
 VARIANT_CONFIG = {
-    "retrieval_mode": "hybrid",   # Hoặc "dense" nếu chỉ đổi rerank
+    "retrieval_mode": "hybrid",  # Hoặc "dense" nếu chỉ đổi rerank
     "top_k_search": 10,
     "top_k_select": 3,
-    "use_rerank": True,           # Hoặc False nếu variant là hybrid không rerank
+    "use_rerank": True,  # Hoặc False nếu variant là hybrid không rerank
     "label": "variant_hybrid_rerank",
 }
 
@@ -55,6 +55,7 @@ VARIANT_CONFIG = {
 # SCORING FUNCTIONS
 # 4 metrics từ slide: Faithfulness, Answer Relevance, Context Recall, Completeness
 # =============================================================================
+
 
 def score_faithfulness(
     answer: str,
@@ -88,12 +89,57 @@ def score_faithfulness(
 
     Trả về dict với: score (1-5) và notes (lý do)
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
-    return {
-        "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
-    }
+    if (
+        not answer
+        or answer.startswith("PIPELINE_NOT_IMPLEMENTED")
+        or answer.startswith("ERROR:")
+    ):
+        return {"score": None, "notes": "Pipeline error — skipped"}
+
+    context_text = "\n\n".join(
+        f"[{i + 1}] {c.get('text', '')}" for i, c in enumerate(chunks_used)
+    )
+
+    prompt = f"""You are an evaluation judge for a RAG system.
+
+Given the retrieved context below, rate how faithful the answer is to the context.
+Faithful means: every claim in the answer is supported by the retrieved context.
+Do NOT penalize for abstaining (saying "I don't know") — that is correct behavior.
+
+Scale:
+5 = Every claim in the answer is directly supported by the context
+4 = Almost entirely grounded; one minor detail is uncertain
+3 = Mostly grounded; some claims may come from model knowledge
+2 = Several claims are not in the retrieved context
+1 = Answer is largely hallucinated / not grounded in the context
+
+Retrieved context:
+{context_text}
+
+Answer to evaluate:
+{answer}
+
+Respond with valid JSON only, no extra text:
+{{"score": <integer 1-5>, "reason": "<one sentence explaining the score>"}}"""
+
+    try:
+        from openai import OpenAI
+        import os
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=128,
+        )
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+        score = int(parsed["score"])
+        score = max(1, min(5, score))  # clamp to [1, 5]
+        return {"score": score, "notes": parsed.get("reason", "")}
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return {"score": None, "notes": f"LLM-as-Judge parse error. Raw: {raw[:100]}"}
 
 
 def score_answer_relevance(
@@ -113,10 +159,46 @@ def score_answer_relevance(
 
     TODO Sprint 4: Implement tương tự score_faithfulness
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
-    }
+    if not answer or answer.startswith("PIPELINE_NOT_IMPLEMENTED") or answer.startswith("ERROR:"):
+        return {"score": None, "notes": "Pipeline error — skipped"}
+
+    prompt = f"""You are an evaluation judge for a RAG system.
+
+Rate how well the answer addresses the user's question.
+Focus only on whether the answer is on-topic and directly answers what was asked.
+Do NOT penalize for short answers or abstaining — those can still be highly relevant.
+
+Scale:
+5 = Directly and completely answers the question
+4 = Answers correctly but misses minor details
+3 = Related to the question but does not fully address the core ask
+2 = Partially off-topic or answers a different question
+1 = Does not answer the question at all
+
+Question: {query}
+Answer: {answer}
+
+Respond with valid JSON only, no extra text:
+{{"score": <integer 1-5>, "reason": "<one sentence explaining the score>"}}"""
+
+    raw = ""
+    try:
+        from openai import OpenAI
+        import os
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=128,
+        )
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+        score = int(parsed["score"])
+        score = max(1, min(5, score))  # clamp to [1, 5]
+        return {"score": score, "notes": parsed.get("reason", "")}
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return {"score": None, "notes": f"LLM-as-Judge parse error. Raw: {raw[:100]}"}
 
 
 def score_context_recall(
@@ -146,10 +228,7 @@ def score_context_recall(
         # Câu hỏi không có expected source (ví dụ: "Không đủ dữ liệu" cases)
         return {"score": None, "recall": None, "notes": "No expected sources"}
 
-    retrieved_sources = {
-        c.get("metadata", {}).get("source", "")
-        for c in chunks_used
-    }
+    retrieved_sources = {c.get("metadata", {}).get("source", "") for c in chunks_used}
 
     # TODO: Kiểm tra matching theo partial path (vì source paths có thể khác format)
     found = 0
@@ -170,8 +249,8 @@ def score_context_recall(
         "recall": recall,
         "found": found,
         "missing": missing,
-        "notes": f"Retrieved: {found}/{len(expected_sources)} expected sources" +
-                 (f". Missing: {missing}" if missing else ""),
+        "notes": f"Retrieved: {found}/{len(expected_sources)} expected sources"
+        + (f". Missing: {missing}" if missing else ""),
     }
 
 
@@ -198,10 +277,49 @@ def score_completeness(
          Rate completeness 1-5. Are all key points covered?
          Output: {'score': int, 'missing_points': [str]}"
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
-    }
+    if not answer or answer.startswith("PIPELINE_NOT_IMPLEMENTED") or answer.startswith("ERROR:"):
+        return {"score": None, "notes": "Pipeline error — skipped"}
+
+    if not expected_answer:
+        return {"score": None, "notes": "No expected answer to compare against"}
+
+    prompt = f"""You are an evaluation judge for a RAG system.
+
+Compare the model's answer against the reference answer and rate completeness.
+Completeness means: does the model's answer cover all key facts and conditions in the reference?
+Do NOT penalize for different wording — only for missing key information.
+
+Scale:
+5 = All key points from the reference are covered
+4 = Missing one minor detail
+3 = Missing some important information
+2 = Missing several important points
+1 = Missing most of the core content
+
+Reference answer: {expected_answer}
+Model answer: {answer}
+
+Respond with valid JSON only, no extra text:
+{{"score": <integer 1-5>, "reason": "<one sentence explaining the score>"}}"""
+
+    raw = ""
+    try:
+        from openai import OpenAI
+        import os
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=128,
+        )
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+        score = int(parsed["score"])
+        score = max(1, min(5, score))  # clamp to [1, 5]
+        return {"score": score, "notes": parsed.get("reason", "")}
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return {"score": None, "notes": f"LLM-as-Judge parse error. Raw: {raw[:100]}"}
 
 
 # =============================================================================
@@ -240,10 +358,10 @@ def run_scorecard(
     results = []
     label = config.get("label", "unnamed")
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"Chạy scorecard: {label}")
     print(f"Config: {config}")
-    print('='*70)
+    print("=" * 70)
 
     for q in test_questions:
         question_id = q["id"]
@@ -301,14 +419,20 @@ def run_scorecard(
 
         if verbose:
             print(f"  Answer: {answer[:100]}...")
-            print(f"  Faithful: {faith['score']} | Relevant: {relevance['score']} | "
-                  f"Recall: {recall['score']} | Complete: {complete['score']}")
+            print(
+                f"  Faithful: {faith['score']} | Relevant: {relevance['score']} | "
+                f"Recall: {recall['score']} | Complete: {complete['score']}"
+            )
 
     # Tính averages (bỏ qua None)
     for metric in ["faithfulness", "relevance", "context_recall", "completeness"]:
         scores = [r[metric] for r in results if r[metric] is not None]
         avg = sum(scores) / len(scores) if scores else None
-        print(f"\nAverage {metric}: {avg:.2f}" if avg else f"\nAverage {metric}: N/A (chưa chấm)")
+        print(
+            f"\nAverage {metric}: {avg:.2f}"
+            if avg
+            else f"\nAverage {metric}: N/A (chưa chấm)"
+        )
 
     return results
 
@@ -316,6 +440,7 @@ def run_scorecard(
 # =============================================================================
 # A/B COMPARISON
 # =============================================================================
+
 
 def compare_ab(
     baseline_results: List[Dict],
@@ -342,9 +467,9 @@ def compare_ab(
     """
     metrics = ["faithfulness", "relevance", "context_recall", "completeness"]
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("A/B Comparison: Baseline vs Variant")
-    print('='*70)
+    print("=" * 70)
     print(f"{'Metric':<20} {'Baseline':>10} {'Variant':>10} {'Delta':>8}")
     print("-" * 55)
 
@@ -363,7 +488,9 @@ def compare_ab(
         print(f"{metric:<20} {b_str:>10} {v_str:>10} {d_str:>8}")
 
     # Per-question comparison
-    print(f"\n{'Câu':<6} {'Baseline F/R/Rc/C':<22} {'Variant F/R/Rc/C':<22} {'Better?':<10}")
+    print(
+        f"\n{'Câu':<6} {'Baseline F/R/Rc/C':<22} {'Variant F/R/Rc/C':<22} {'Better?':<10}"
+    )
     print("-" * 65)
 
     b_by_id = {r["id"]: r for r in baseline_results}
@@ -371,17 +498,17 @@ def compare_ab(
         qid = v_row["id"]
         b_row = b_by_id.get(qid, {})
 
-        b_scores_str = "/".join([
-            str(b_row.get(m, "?")) for m in metrics
-        ])
-        v_scores_str = "/".join([
-            str(v_row.get(m, "?")) for m in metrics
-        ])
+        b_scores_str = "/".join([str(b_row.get(m, "?")) for m in metrics])
+        v_scores_str = "/".join([str(v_row.get(m, "?")) for m in metrics])
 
         # So sánh đơn giản
         b_total = sum(b_row.get(m, 0) or 0 for m in metrics)
         v_total = sum(v_row.get(m, 0) or 0 for m in metrics)
-        better = "Variant" if v_total > b_total else ("Baseline" if b_total > v_total else "Tie")
+        better = (
+            "Variant"
+            if v_total > b_total
+            else ("Baseline" if b_total > v_total else "Tie")
+        )
 
         print(f"{qid:<6} {b_scores_str:<22} {v_scores_str:<22} {better:<10}")
 
@@ -401,6 +528,7 @@ def compare_ab(
 # =============================================================================
 # REPORT GENERATOR
 # =============================================================================
+
 
 def generate_scorecard_summary(results: List[Dict], label: str) -> str:
     """
@@ -433,9 +561,11 @@ Generated: {timestamp}
     md += "|----|----------|----------|----------|--------|----------|-------|\n"
 
     for r in results:
-        md += (f"| {r['id']} | {r['category']} | {r.get('faithfulness', 'N/A')} | "
-               f"{r.get('relevance', 'N/A')} | {r.get('context_recall', 'N/A')} | "
-               f"{r.get('completeness', 'N/A')} | {r.get('faithfulness_notes', '')[:50]} |\n")
+        md += (
+            f"| {r['id']} | {r['category']} | {r.get('faithfulness', 'N/A')} | "
+            f"{r.get('relevance', 'N/A')} | {r.get('context_recall', 'N/A')} | "
+            f"{r.get('completeness', 'N/A')} | {r.get('faithfulness_notes', '')[:50]} |\n"
+        )
 
     return md
 
@@ -488,23 +618,23 @@ if __name__ == "__main__":
 
     # --- Chạy Variant (sau khi Sprint 3 hoàn thành) ---
     # TODO Sprint 4: Uncomment sau khi implement variant trong rag_answer.py
-    # print("\n--- Chạy Variant ---")
-    # variant_results = run_scorecard(
-    #     config=VARIANT_CONFIG,
-    #     test_questions=test_questions,
-    #     verbose=True,
-    # )
-    # variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
-    # (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
+    print("\n--- Chạy Variant ---")
+    variant_results = run_scorecard(
+        config=VARIANT_CONFIG,
+        test_questions=test_questions,
+        verbose=True,
+    )
+    variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
+    (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
 
     # --- A/B Comparison ---
     # TODO Sprint 4: Uncomment sau khi có cả baseline và variant
-    # if baseline_results and variant_results:
-    #     compare_ab(
-    #         baseline_results,
-    #         variant_results,
-    #         output_csv="ab_comparison.csv"
-    #     )
+    if baseline_results and variant_results:
+        compare_ab(
+            baseline_results,
+            variant_results,
+            output_csv="ab_comparison.csv"
+        )
 
     print("\n\nViệc cần làm Sprint 4:")
     print("  1. Hoàn thành Sprint 2 + 3 trước")
