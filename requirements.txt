@@ -24,5 +24,10 @@ rank-bm25>=0.2.2                 # BM25 keyword search
 # === Sprint 3: Rerank ===
 # sentence-transformers đã bao gồm CrossEncoder
 
+# === Web UI ===
+fastapi>=0.100.0                 # API backend
+uvicorn>=0.20.0                  # ASGI server
+sse-starlette>=1.0.0             # Server-Sent Events cho streaming
+
 # === Utils ===
 tqdm>=4.66.0                     # Progress bar khi index nhiều docs
