@@ -158,7 +158,7 @@ def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any
         chunks.append({
             "text": docs[idx],
             "metadata": metas[idx],
-            "score": float(scores[idx]),
+            "score": float(scores[idx]),  # BM25 raw score (thang đo riêng, không normalize)
         })
 
     return chunks
@@ -201,8 +201,13 @@ def retrieve_hybrid(
     sparse_results = retrieve_sparse(query, top_k=top_k)
 
     # Build rank maps: chunk text → rank (0-based)
+    # RRF dùng rank (thứ hạng), KHÔNG dùng raw score → không bị ảnh hưởng bởi thang đo
     dense_rank = {c["text"]: rank for rank, c in enumerate(dense_results)}
     sparse_rank = {c["text"]: rank for rank, c in enumerate(sparse_results)}
+
+    # Giữ raw scores gốc để hiển thị trên UI
+    dense_raw = {c["text"]: c["score"] for c in dense_results}
+    sparse_raw = {c["text"]: c["score"] for c in sparse_results}
 
     # Collect tất cả chunks (dedup theo text)
     all_chunks = {}
@@ -210,14 +215,22 @@ def retrieve_hybrid(
         if c["text"] not in all_chunks:
             all_chunks[c["text"]] = c
 
-    # Tính RRF score
+    # Reciprocal Rank Fusion (RRF) — rank-based, scale-invariant
+    # RRF_score = w_d * 1/(K + dense_rank) + w_s * 1/(K + sparse_rank)
     K = 60  # hằng số RRF tiêu chuẩn
     scored = []
     for text, chunk in all_chunks.items():
         d_rank = dense_rank.get(text, top_k + 1)
         s_rank = sparse_rank.get(text, top_k + 1)
         rrf = dense_weight * (1 / (K + d_rank)) + sparse_weight * (1 / (K + s_rank))
-        scored.append({**chunk, "score": rrf})
+        scored.append({
+            **chunk,
+            "score": rrf,                               # RRF score (thang nhỏ là bình thường)
+            "dense_score": dense_raw.get(text, 0.0),    # cosine similarity gốc (0-1)
+            "sparse_score": sparse_raw.get(text, 0.0),  # BM25 raw score gốc
+            "dense_rank": d_rank + 1,                    # rank 1-based cho UI
+            "sparse_rank": s_rank + 1,
+        })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_k]
