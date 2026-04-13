@@ -300,9 +300,14 @@ def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None
 
     # TODO: Khởi tạo ChromaDB
     client = chromadb.PersistentClient(path=str(db_dir))
+    # Xoá collection cũ nếu có để rebuild sạch
+    try:
+        client.delete_collection("rag_lab")
+    except Exception:
+        pass
     collection = client.get_or_create_collection(
         name="rag_lab",
-        metadata={"hnsw:space": "cosine"}
+        metadata={"hnsw:space": "cosine"},
     )
 
     total_chunks = 0
@@ -322,7 +327,6 @@ def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None
         # TODO: Gọi chunk_document
         chunks = chunk_document(doc)
 
-        # TODO: Embed và lưu từng chunk vào ChromaDB
         for i, chunk in enumerate(chunks):
             chunk_id = f"{filepath.stem}_{i}"
             embedding = get_embedding(chunk["text"])
@@ -332,18 +336,11 @@ def build_index(docs_dir: Path = DOCS_DIR, db_dir: Path = CHROMA_DB_DIR) -> None
                 documents=[chunk["text"]],
                 metadatas=[chunk["metadata"]],
             )
-        total_chunks += len(chunks)
 
-        # Placeholder để code không lỗi khi chưa implement
-        doc = preprocess_document(raw_text, str(filepath))
-        chunks = chunk_document(doc)
-        print(f"    → {len(chunks)} chunks (embedding chưa implement)")
+        print(f"    → {len(chunks)} chunks embedded & stored")
         total_chunks += len(chunks)
 
     print(f"\nHoàn thành! Tổng số chunks: {total_chunks}")
-    print(
-        "Lưu ý: Embedding chưa được implement. Xem TODO trong get_embedding() và build_index()."
-    )
 
 
 # =============================================================================
@@ -439,9 +436,9 @@ if __name__ == "__main__":
     for f in doc_files:
         print(f"  - {f.name}")
 
-    # Bước 2: Test preprocess và chunking (không cần API key)
+    # Bước 2: Test preprocess và chunking
     print("\n--- Test preprocess + chunking ---")
-    for filepath in doc_files[:1]:  # Test với 1 file đầu
+    for filepath in doc_files[:1]:
         raw = filepath.read_text(encoding="utf-8")
         doc = preprocess_document(raw, str(filepath))
         chunks = chunk_document(doc)
@@ -451,6 +448,15 @@ if __name__ == "__main__":
         for i, chunk in enumerate(chunks[:3]):
             print(f"\n  [Chunk {i + 1}] Section: {chunk['metadata']['section']}")
             print(f"  Text: {chunk['text'][:150]}...")
+
+    # Bước 3: Build full index
+    print("\n--- Build Full Index ---")
+    build_index()
+
+    # Bước 4: Kiểm tra index
+    print("\n--- Kiểm tra index ---")
+    list_chunks(n=10)
+    inspect_metadata_coverage()
 
     # Bước 3: Build index (yêu cầu implement get_embedding)
     print("\n--- Build Full Index ---")
